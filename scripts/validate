@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Validator gate — statement-integrity + sorry/axiom check.
+#
+# A proof is "validated green" only when ALL hold:
+#   1. every frozen declaration SIGNATURE is byte-identical to the baseline
+#      (the prover did not offload difficulty by mutating the target/hypotheses);
+#   2. it compiles (run `lake build` separately / in CI);
+#   3. no sorry / admit / native_decide / axiom (delegates to no_sorry.sh);
+#   4. the capstone `#print axioms` reads only the trusted three (check by hand
+#      or via `lean_verify`).
+#
+# Statements are FROZEN; proof bodies are free to change. There are no EVOLVE
+# markers — the frozen unit is the declaration signature (everything from the
+# `theorem`/`lemma`/`def`/… keyword up to, but not including, `:=`).
+#
+# Usage:  scripts/validate <frozen-baseline.lean> <current.lean>
+# The frozen baseline is the Stage-1, human-approved skeleton copy, e.g.
+#   sketches/<topic>.frozen.lean   (read-only; never edited after the human signs off)
+# The current file is the working skeleton the prover fills in.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: scripts/validate <frozen-baseline.lean> <current.lean>" >&2
+  exit 2
+fi
+frozen="$1"; current="$2"
+status=0
+
+# Extract declaration signatures only: from a decl keyword line through the line
+# containing `:=`, truncated at `:=` so the proof body is dropped. `import`/`open`
+# are not signatures (provers legitimately add Mathlib imports), so they are
+# ignored. This is a heuristic; if a project's statements use `:=` (e.g. in a
+# structure default) keep the frozen baseline minimal and eyeball the diff.
+sigs() {
+  awk '
+    /^[[:space:]]*(theorem|lemma|def|abbrev|structure|inductive|class|instance|example)[[:space:]]/ { insig=1 }
+    insig==1 && /:=/ { sub(/:=.*/, ":="); print; insig=0; next }
+    insig==1          { print }
+  ' "$1"
+}
+
+if ! diff <(sigs "$frozen") <(sigs "$current") >/dev/null; then
+  echo "ERROR: a frozen declaration statement changed (the target/hypotheses were" >&2
+  echo "       mutated — difficulty must not be offloaded by rewriting the claim):" >&2
+  diff <(sigs "$frozen") <(sigs "$current") >&2 || true
+  status=1
+fi
+
+# Sorry / axiom / native_decide gate on the production library.
+if ! bash scripts/no_sorry.sh; then
+  status=1
+fi
+
+if [ "$status" -eq 0 ]; then
+  echo 'validate: OK (frozen statements intact; sorry-gate clean).'
+  echo '  reminder: confirm `lake build` is green and the capstone #print axioms ='
+  echo '  [propext, Classical.choice, Quot.sound].'
+fi
+exit "$status"

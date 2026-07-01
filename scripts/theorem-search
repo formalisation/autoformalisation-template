@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Semantic theorem search over arXiv + Lean via api.theoremsearch.com.
+
+Complements `lean-search` (Mathlib-only). theoremsearch indexes BOTH informal
+arXiv statements AND formal Lean ("Lean Community") statements, and links them in
+a dependency graph. Use it to answer:
+
+  - "what does the literature around this theorem look like?"  -> default search
+  - "has anyone already formalised this in Lean?"              -> --lean
+  - "what does this result depend on / restate?"               -> graph <id>
+
+No API key needed (public). Pure standard library, no pip installs.
+
+Usage:
+  scripts/theorem-search "conservation law gradient flow deep linear network"
+  scripts/theorem-search --lean "spectral theorem symmetric matrix"   # Lean only
+  scripts/theorem-search "balanced manifold" --source arXiv --type lemma -n 8
+  scripts/theorem-search --pagerank "Lojasiewicz inequality convergence"
+  scripts/theorem-search graph <statement_id>          # deps + Lean restatements
+  scripts/theorem-search --json "..."                  # raw JSON for piping
+
+Env: THEOREMSEARCH_URL overrides the base URL (default https://api.theoremsearch.com).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.parse
+import urllib.request
+
+BASE = os.environ.get("THEOREMSEARCH_URL", "https://api.theoremsearch.com").rstrip("/")
+TIMEOUT = 30
+
+
+def _req(method: str, path: str, body: dict | None = None) -> dict:
+    url = BASE + path
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:  # noqa: PERF203
+        sys.exit(f"theorem-search: HTTP {e.code} on {path}: {e.read().decode()[:300]}")
+    except urllib.error.URLError as e:
+        sys.exit(f"theorem-search: network error: {e.reason}")
+
+
+def _trunc(s: str | None, n: int) -> str:
+    s = (s or "").replace("\n", " ").strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def cmd_search(a) -> None:
+    if a.lean:
+        # The POST /search source filter does not surface Lean; the embedding
+        # index does. NB: this corpus is Lean *formalization papers*, NOT Mathlib
+        # — for Mathlib lemmas use `lean-search` / loogle instead.
+        params = [("query", a.query), ("n_results", str(a.n)), ("mode", "full"),
+                  ("sources", "Lean Community")]
+        d = _req("GET", "/graph/embedding?" + urllib.parse.urlencode(params))
+        if a.json:
+            print(json.dumps(d, indent=2)); return
+        res = d.get("results", [])
+        if not res:
+            print("no Lean results"); return
+        for r in res:
+            print(f'\nsim={r.get("similarity",0):.3f}  {r.get("name","?")}  ({r.get("title") or r.get("paper_id")})'
+                  f'\n    {_trunc(r.get("body"), 160)}')
+        return
+    body = {"query": a.query, "n_results": a.n}
+    if a.source:
+        body["sources"] = a.source
+    if a.type:
+        body["types"] = a.type
+    if a.pagerank:
+        # graph-flavored retrieval: PPR over the citation graph
+        qs = urllib.parse.urlencode({"query": a.query, "n_results": a.n})
+        d = _req("GET", f"/graph/pagerank?{qs}")
+        if a.json:
+            print(json.dumps(d, indent=2)); return
+        for r in d.get("results", []):
+            print(f'  {r["score"]:.4f}  {r["statement_id"]}')
+        print("\n(pagerank returns statement_ids; resolve with: theorem-search graph <id>)")
+        return
+
+    d = _req("POST", "/search", body)
+    if a.json:
+        print(json.dumps(d, indent=2)); return
+    ts = d.get("theorems", [])
+    if not ts:
+        print("no results"); return
+    for t in ts:
+        p = t.get("paper", {})
+        print(f'\n[{t.get("theorem_type","?"):<11}] sim={t.get("similarity",0):.3f}  '
+              f'{t.get("name","")}'
+              f'\n    src={p.get("source","?")}  {_trunc(p.get("title"), 70)}'
+              f'\n    {_trunc(t.get("slogan") or t.get("body"), 160)}')
+        if p.get("link"):
+            print(f'    {p["link"]}')
+
+
+def cmd_graph(a) -> None:
+    qs = urllib.parse.urlencode(
+        {"direction": a.direction, "formality": a.formality, "return": "root", "mode": "full"},
+    ) + "&return=nodes&return=edges&return=representations&n_representations=10"
+    d = _req("GET", f"/graph/statement/{a.statement_id}?{qs}")
+    if a.json:
+        print(json.dumps(d, indent=2)); return
+    root = d.get("root") or {}
+    st = root.get("statement") or {}
+    print(f'ROOT  {root.get("name") or root.get("statement_id")}')
+    if st.get("body"):
+        print(f'      {_trunc(st["body"], 200)}')
+    edges = d.get("edges") or []
+    print(f'\nDEPENDENCIES ({a.formality}, {a.direction})  [{len(edges)}]')
+    for e in edges[:30]:
+        print(f'  -> {e.get("dep_name") or e.get("dep_key") or e.get("dep_id")}')
+    reps = d.get("representations") or []
+    print(f'\nCROSS-PAPER RESTATEMENTS  [{len(reps)}]  (e.g. Lean formalisations of this result)')
+    for r in reps:
+        print(f'  ~{r["similarity"]:.3f}  {r["statement_id"]}  (paper {r["paper_id"]})')
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    if argv and argv[0] == "graph":
+        g = argparse.ArgumentParser(prog="theorem-search graph")
+        g.add_argument("statement_id")
+        g.add_argument("--direction", choices=["src", "dep", "both"], default="src",
+                       help="src: what it depends on; dep: what depends on it; both")
+        g.add_argument("--formality", choices=["informal", "formal"], default="informal")
+        g.add_argument("--json", action="store_true")
+        cmd_graph(g.parse_args(argv[1:])); return
+
+    ap = argparse.ArgumentParser(prog="theorem-search", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("query", help="natural-language query (or: theorem-search graph <statement_id>)")
+    ap.add_argument("-n", type=int, default=10, help="number of results (default 10)")
+    ap.add_argument("--source", action="append", help="filter: arXiv | 'Lean Community' (repeatable)")
+    ap.add_argument("--type", action="append", help="filter: theorem | lemma | proposition ... (repeatable)")
+    ap.add_argument("--lean", action="store_true", help="shortcut: restrict to Lean Community source")
+    ap.add_argument("--pagerank", action="store_true", help="graph-flavored PPR retrieval over citation graph")
+    ap.add_argument("--json", action="store_true", help="raw JSON output")
+    cmd_search(ap.parse_args(argv))
+
+
+if __name__ == "__main__":
+    main()

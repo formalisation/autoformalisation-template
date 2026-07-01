@@ -1,0 +1,73 @@
+# formalization.yaml (v0.3): repo-root metadata for formalization projects.
+# Schema: https://github.com/mathlib-initiative/formalization.yaml
+# Replace every <FILL IN>. [required] fields must be present and filled.
+version: "v0.3"
+
+project:
+  name: "<PROJECT>"                       # [required]
+  authors: ["Yangda Bei"]                 # [required]
+  license: "Apache-2.0"                    # [required]
+
+sources:                                  # [required]
+  - title: "<FILL IN paper title>"        # [required]
+    authors: ["<FILL IN>"]               # [required]
+    id: "<FILL IN arXiv:XXXX.XXXXX or DOI>"  # [required] link/DOI/arXiv (with version)
+    type: "preprint"                      # textbook | preprint | blueprint | ...
+    license: ""
+    author_contacted: "no"               # yes | no | n/a
+    prior_work: ""
+
+status:
+  scope: "<FILL IN: what is in scope vs. explicitly out of scope>"
+  sorry_count: 0                          # main library (exclude aristotle/ scratch inputs)
+  sorry_in_definitions: 0
+  axioms: ["propext", "Classical.choice", "Quot.sound"]
+  main_results:
+    - declaration: "<Project>.<capstone>"
+      file: "<Project>/Basic.lean"
+      sorry_count: 0
+      axioms: ["propext", "Classical.choice", "Quot.sound"]
+      comparator_config: ""
+      literature_dependencies:
+        - statement: "<FILL IN if the result assumes a named external interface>"
+          source: ""
+
+# How it was produced — the auto-loop stack. Adjust per actual runs.
+automation:                               # [required]
+  methods:
+    - method: "agent"                     # [required] manual | copilot | agent | autonomous | other
+      models: ["claude-opus-4-8", "gpt-5.5"]
+      framework: "Claude Code"
+      tool_setup: >
+        auto-loop skill: skeleton-first (frozen statement),
+        fan-out prover subagents in git worktrees with lean-lsp-mcp inner loop,
+        Mathlib-first retrieval (loogle / leansearch / state-search / hammer),
+        scripts/validate (frozen-stmt diff + sorry gate) + scripts/no_sorry.sh,
+        codex CLI (GPT-5.5) for counterexamples, Aristotle as formal oracle /
+        honesty critique. See skills/lean-references for conventions.
+      cost:
+        wall_time: ""
+        spend_usd: ""
+        hardware: "API-only + local laptop"
+      prompting_notes: ""
+  spend_usd: ""
+  notes: ""
+
+fidelity:
+  divergences: "<FILL IN: generalizations, weakened hypotheses, renamed lemmas, conditional hypotheses threaded as explicit args>"
+
+review:
+  status: "self-assessed"                 # [required] unchecked | agent-reviewed | self-assessed | peer-reviewed | author-verified
+  reviewers: []
+  notes: "See CRITICISMS.md for open quality concerns; PROGRESS.md for deferred work."
+
+alignment:
+  namespace: "<Project>"
+  statements:
+    - source: "<source theorem/eq label>"
+      lean: "<Project>.<decl>"
+      module: "<Project>/Basic.lean"
+      status: "proved"                    # proved | literature-dependency | in-progress | not-formalized
+      note: ""
+
+acknowledgements: "Mathlib; reference library vendored from cameronfreer/lean4-skills (MIT)."

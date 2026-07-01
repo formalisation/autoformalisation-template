@@ -1,0 +1,14 @@
+# Primary-source TeX (reference only; commit the compiled PDF instead)
+papers/*-source/
+
+# macOS
+.DS_Store
+
+# Lake / Lean build artifacts
+/.lake/
+/lake-packages/
+*.olean
+*.olean.tmp
+
+# Python (scripts)
+__pycache__/
